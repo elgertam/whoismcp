@@ -176,6 +176,21 @@ Changelog:
   * Implemented proper MCP resources with configuration and status endpoints
   * Added comprehensive test cleanup to prevent async task warnings
   * Updated package version to 0.3.4 with fixed dependency resolution
+
+- July 13, 2025. HTTP MCP server implementation completed
+  * Implemented complete HTTP transport using Streamable HTTP MCP specification (2025-03-26)
+  * Added FastAPI-based HTTP server with single endpoint supporting POST/GET/DELETE methods
+  * Implemented secure session management with cryptographic session IDs
+  * Added proper Origin header validation to prevent DNS rebinding attacks
+  * Created comprehensive session lifecycle management with automatic cleanup
+  * Added support for Server-Sent Events (SSE) for streaming responses
+  * Implemented message caching for resumable connections with Last-Event-ID support
+  * Added new CLI command `whoismcp serve-http` for easy HTTP server startup
+  * Created new entry point `whoismcp-http` for direct HTTP server execution
+  * Added complete HTTP client example with proper error handling and session management
+  * All HTTP MCP functionality fully tested and working: tools, resources, lookups, session management
+  * HTTP server runs on port 5001 with health check endpoint and full MCP protocol support
+  * Created comprehensive HTTP_MCP_README.md with examples and deployment instructions
 ```
 
 ## User Preferences

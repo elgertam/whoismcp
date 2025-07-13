@@ -26,10 +26,12 @@ classifiers = [
 dependencies = [
     "anyio>=4.0.0",
     "click>=8.1.0",
+    "fastapi>=0.116.1",
     "hatch>=1.14.1",
     "httpx>=0.24.0",
     "pydantic>=2.0.0",
     "structlog>=23.0.0",
+    "uvicorn[standard]>=0.35.0",
 ]
 
 [project.optional-dependencies]
@@ -41,10 +43,15 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
+http = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+]
 
 [project.scripts]
 whoismcp = "whoismcp.cli:main"
 whoismcp-server = "whoismcp.mcp_server:main"
+whoismcp-http = "whoismcp.http_server:main"
 
 [project.urls]
 Homepage = "https://github.com/example/whoismcp"

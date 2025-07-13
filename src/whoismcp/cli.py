@@ -329,6 +329,43 @@ def config_show(ctx: click.Context) -> None:
         click.echo(f"{key}: {value}")
 
 
+@cli.command("serve-http")
+@click.option("--host", "-h", default="127.0.0.1", help="Host to bind to")
+@click.option("--port", "-p", default=5001, help="Port to bind to")
+@click.pass_context
+def serve_http(ctx: click.Context, host: str, port: int) -> None:
+    """Start MCP server with HTTP transport."""
+    try:
+        from whoismcp.http_server import create_fastapi_app
+        import uvicorn
+    except ImportError:
+        click.echo("HTTP transport requires additional dependencies. Install with:")
+        click.echo("  uv add --optional-group http")
+        click.echo("  or")
+        click.echo("  pip install 'whoismcp[http]'")
+        return
+    
+    config = ctx.obj["config"]
+    config.bind_host = host
+    config.bind_port = port
+    
+    click.echo(f"Starting WhoisMCP HTTP server on {host}:{port}")
+    click.echo(f"MCP endpoint: http://{host}:{port}/mcp")
+    click.echo(f"Health check: http://{host}:{port}/health")
+    
+    app = create_fastapi_app(config)
+    
+    try:
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            log_level="info"
+        )
+    except KeyboardInterrupt:
+        click.echo("\nServer stopped by user")
+
+
 def main() -> None:
     """Main CLI entry point."""
     cli()
