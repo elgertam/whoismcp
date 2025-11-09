@@ -15,6 +15,21 @@ class Config:
     bind_host: str = field(default_factory=lambda: os.getenv("BIND_HOST", "0.0.0.0"))
     bind_port: int = field(default_factory=lambda: int(os.getenv("BIND_PORT", "5001")))
 
+    # Transport mode: "stdio" or "sse"
+    transport_mode: str = field(default_factory=lambda: os.getenv("TRANSPORT_MODE", "stdio"))
+
+    # SSE server configuration
+    sse_endpoint: str = field(default_factory=lambda: os.getenv("SSE_ENDPOINT", "/sse"))
+    cors_allowed_origins: str = field(default_factory=lambda: os.getenv("CORS_ALLOWED_ORIGINS", "*"))
+
+    # Bulk check configuration
+    bulk_check_max_domains: int = field(
+        default_factory=lambda: int(os.getenv("BULK_CHECK_MAX_DOMAINS", "100"))
+    )
+    bulk_check_concurrency: int = field(
+        default_factory=lambda: int(os.getenv("BULK_CHECK_CONCURRENCY", "10"))
+    )
+
     # Timeout configuration (seconds)
     whois_timeout: int = field(
         default_factory=lambda: int(os.getenv("WHOIS_TIMEOUT", "30"))
@@ -72,6 +87,11 @@ class Config:
         return {
             "bind_host": self.bind_host,
             "bind_port": self.bind_port,
+            "transport_mode": self.transport_mode,
+            "sse_endpoint": self.sse_endpoint,
+            "cors_allowed_origins": self.cors_allowed_origins,
+            "bulk_check_max_domains": self.bulk_check_max_domains,
+            "bulk_check_concurrency": self.bulk_check_concurrency,
             "whois_timeout": self.whois_timeout,
             "rdap_timeout": self.rdap_timeout,
             "global_rate_limit_per_second": self.global_rate_limit_per_second,
@@ -97,6 +117,15 @@ class Config:
         """Validate configuration values."""
         if self.bind_port < 1 or self.bind_port > 65535:
             raise ValueError(f"Invalid port number: {self.bind_port}")
+
+        if self.transport_mode not in ["stdio", "sse"]:
+            raise ValueError(f"Invalid transport mode: {self.transport_mode}")
+
+        if self.bulk_check_max_domains <= 0 or self.bulk_check_max_domains > 1000:
+            raise ValueError(f"Invalid bulk check max domains: {self.bulk_check_max_domains}")
+
+        if self.bulk_check_concurrency <= 0 or self.bulk_check_concurrency > 50:
+            raise ValueError(f"Invalid bulk check concurrency: {self.bulk_check_concurrency}")
 
         if self.whois_timeout <= 0:
             raise ValueError(f"Invalid whois timeout: {self.whois_timeout}")

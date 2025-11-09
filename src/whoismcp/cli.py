@@ -329,6 +329,113 @@ def config_show(ctx: click.Context) -> None:
         click.echo(f"{key}: {value}")
 
 
+@cli.command("serve")
+@click.option(
+    "--mode",
+    type=click.Choice(["stdio", "sse"]),
+    default="stdio",
+    help="Server transport mode",
+)
+@click.option("--host", default=None, help="Host to bind to (SSE mode only)")
+@click.option("--port", default=None, type=int, help="Port to bind to (SSE mode only)")
+@click.pass_context
+def serve(ctx: click.Context, mode: str, host: str | None, port: int | None) -> None:
+    """Start the MCP server in specified mode."""
+    config = ctx.obj["config"]
+
+    if mode == "stdio":
+        click.echo("Starting MCP server in stdio mode...", err=True)
+        from whoismcp.mcp_server import main as stdio_main
+
+        stdio_main()
+    elif mode == "sse":
+        # Override config if host/port provided
+        if host:
+            config.bind_host = host
+        if port:
+            config.bind_port = port
+
+        config.validate()
+
+        click.echo(
+            f"Starting MCP server in SSE mode on {config.bind_host}:{config.bind_port}...",
+            err=True,
+        )
+        from whoismcp.sse_server import main as sse_main
+
+        sse_main()
+
+
+@cli.command("bulk-check")
+@click.argument("domains", nargs=-1, required=True)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Choice(["json", "text"]),
+    default="text",
+    help="Output format",
+)
+@click.pass_context
+def bulk_check(ctx: click.Context, domains: tuple[str, ...], output: str) -> None:
+    """Check registration status of multiple domains."""
+
+    async def run_bulk_check() -> None:
+        from whoismcp.services.cache_service import CacheService
+        from whoismcp.services.rdap_service import RDAPService
+
+        config = ctx.obj["config"]
+        rdap_service = RDAPService(config)
+        cache_service = CacheService(config)
+
+        await cache_service.start()
+
+        try:
+            results = {}
+
+            async def check_domain(domain: str) -> None:
+                try:
+                    result = await rdap_service.lookup_domain(domain)
+                    if result.get("success"):
+                        response_data = result.get("response_data", {})
+                        if response_data.get("objectClassName") == "domain" or response_data.get("status"):
+                            results[domain] = "registered"
+                        else:
+                            results[domain] = "available"
+                    else:
+                        error = result.get("error", "")
+                        if "not found" in error.lower() or "404" in error:
+                            results[domain] = "available"
+                        else:
+                            results[domain] = "error"
+                except Exception as e:
+                    logger.error("Domain check failed", domain=domain, error=str(e))
+                    results[domain] = "error"
+
+            # Process domains concurrently
+            semaphore = asyncio.Semaphore(config.bulk_check_concurrency)
+
+            async def check_with_limit(domain: str) -> None:
+                async with semaphore:
+                    await check_domain(domain)
+
+            await asyncio.gather(*[check_with_limit(d) for d in domains])
+
+            if output == "json":
+                click.echo(json.dumps(results, indent=2))
+            else:
+                click.echo("\nDomain Registration Status:")
+                click.echo("=" * 60)
+                for domain, status in results.items():
+                    status_icon = "✓" if status == "registered" else "✗" if status == "available" else "!"
+                    click.echo(f"{status_icon} {domain:40} {status}")
+
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+    asyncio.run(run_bulk_check())
+
+
 def main() -> None:
     """Main CLI entry point."""
     cli()

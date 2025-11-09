@@ -6,6 +6,8 @@ A modern, high-performance Model Context Protocol (MCP) server providing domain 
 
 ✨ **Modern Architecture**: Clean package structure with `uv` for dependency management
 🚀 **High Performance**: Asynchronous operations with connection pooling
+🌐 **Remote Access**: SSE-based transport for remote MCP access over HTTP/HTTPS
+⚡ **Bulk Domain Check**: Efficient batch checking with minimal token usage
 🛡️ **Rate Limiting**: Built-in protection for external registry servers
 💾 **Smart Caching**: In-memory LRU cache with TTL for optimal performance
 🔍 **Dual Protocols**: Support for both Whois (TCP) and RDAP (HTTPS) lookups
@@ -31,18 +33,45 @@ pip install -e ".[dev]"
 
 ### Running the MCP Server
 
-The MCP server communicates via stdin/stdout as per the MCP specification:
+The MCP server supports two transport modes:
+
+#### stdio Mode (Default)
+
+Traditional MCP mode for local clients via stdin/stdout:
 
 ```bash
 # Using uv (recommended)
 uv run whoismcp-server
 
-# Or directly
-./mcp_server_new
+# Or using the CLI
+uv run whoismcp serve --mode stdio
 
 # For development
 python -m whoismcp.mcp_server
 ```
+
+#### SSE Mode (Remote Access)
+
+HTTP/SSE transport for remote access:
+
+```bash
+# Start SSE server (default: http://0.0.0.0:5001)
+uv run whoismcp serve --mode sse
+
+# Custom host and port
+uv run whoismcp serve --mode sse --host 127.0.0.1 --port 8080
+
+# Or directly
+uv run whoismcp-sse
+
+# For development
+python -m whoismcp.sse_server
+```
+
+The SSE server provides:
+- `/message` - POST endpoint for JSON-RPC requests
+- `/sse` - SSE endpoint for event streaming
+- `/health` - Health check endpoint
 
 ### Using the CLI
 
@@ -53,8 +82,15 @@ uv run whoismcp whois example.com
 # RDAP lookup with JSON output
 uv run whoismcp rdap example.com --output json
 
+# Bulk domain check (new!)
+uv run whoismcp bulk-check example.com google.com github.com
+uv run whoismcp bulk-check domain1.com domain2.com --output json
+
 # Test server connectivity
 uv run whoismcp test-server --host localhost --port 5001
+
+# Show configuration
+uv run whoismcp config
 ```
 
 ### Web Demo
@@ -70,6 +106,8 @@ python main.py
 
 ### Client Configuration
 
+#### stdio Mode (Local)
+
 Add to your MCP client configuration:
 
 ```json
@@ -77,8 +115,29 @@ Add to your MCP client configuration:
   "mcpServers": {
     "whoismcp": {
       "command": "/path/to/whoismcp/.venv/bin/python",
-      "args": ["run", "-m", "whoismcp.mcp_server"],
+      "args": ["-m", "whoismcp.mcp_server"],
       "cwd": "/path/to/whoismcp"
+    }
+  }
+}
+```
+
+#### SSE Mode (Remote)
+
+For remote access, start the SSE server first:
+
+```bash
+uv run whoismcp serve --mode sse --host 0.0.0.0 --port 5001
+```
+
+Then configure your MCP client to connect via HTTP:
+
+```json
+{
+  "mcpServers": {
+    "whoismcp-remote": {
+      "url": "http://your-server:5001/message",
+      "transport": "sse"
     }
   }
 }
@@ -87,7 +146,18 @@ Add to your MCP client configuration:
 ### Available Tools
 
 - **`whois_lookup`**: Perform Whois lookup for domain or IP address
+  - Returns full whois data with raw response and parsed fields
+  - Supports both domains and IP addresses
+
 - **`rdap_lookup`**: Perform RDAP lookup for domain or IP address
+  - Returns structured RDAP JSON data
+  - Supports domains and IP addresses with automatic server discovery
+
+- **`check_domains_bulk`**: Check registration status of multiple domains (new!)
+  - Efficient batch processing with concurrency control
+  - Returns simple status: "registered", "available", or "error"
+  - Minimal token usage - perfect for checking large lists
+  - Example response: `{"example.com": "registered", "available-domain.com": "available"}`
 
 ## Package Structure
 
@@ -102,7 +172,8 @@ whoismcp/
 ├── src/whoismcp/           # Main package
 │   ├── __init__.py         # Package exports
 │   ├── config.py           # Configuration management
-│   ├── mcp_server.py       # MCP server implementation
+│   ├── mcp_server.py       # MCP server (stdio transport)
+│   ├── sse_server.py       # MCP server (SSE/HTTP transport) [NEW]
 │   ├── cli.py              # Command-line interface
 │   ├── models/             # Data models
 │   │   ├── __init__.py
@@ -132,6 +203,15 @@ Environment variables for customization:
 # Server settings
 BIND_HOST=0.0.0.0           # Bind host (default: 0.0.0.0)
 BIND_PORT=5001              # Bind port (default: 5001)
+TRANSPORT_MODE=stdio        # Transport mode: stdio or sse (default: stdio)
+
+# SSE server settings
+SSE_ENDPOINT=/sse           # SSE endpoint path (default: /sse)
+CORS_ALLOWED_ORIGINS=*      # CORS allowed origins (default: *)
+
+# Bulk check settings
+BULK_CHECK_MAX_DOMAINS=100  # Max domains per bulk check (default: 100)
+BULK_CHECK_CONCURRENCY=10   # Concurrent checks limit (default: 10)
 
 # Timeouts
 WHOIS_TIMEOUT=30            # Whois timeout in seconds

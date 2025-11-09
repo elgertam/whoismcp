@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-MCP Server for Whois/RDAP lookups using stdio communication.
-This implements the Model Context Protocol specification for AI integration.
+MCP Server for Whois/RDAP lookups using SSE (Server-Sent Events) transport.
+This allows remote access to the MCP server via HTTP/HTTPS.
 """
 
 import asyncio
 import json
 import logging
-import sys
+import uuid
 from typing import Any
 
 import structlog
+from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, StreamingResponse
+from starlette.routing import Route
 
 from whoismcp.config import Config
 from whoismcp.services.cache_service import CacheService
@@ -19,7 +24,7 @@ from whoismcp.services.whois_service import WhoisService
 from whoismcp.utils.rate_limiter import RateLimiter
 from whoismcp.utils.validators import is_valid_domain, is_valid_ip
 
-# Configure structlog to output to stderr for MCP compatibility
+# Configure structlog
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -36,15 +41,14 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 
-logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
 logger = structlog.get_logger(__name__)
 
 
-class MCPServer:
-    """MCP Server that communicates via stdin/stdout."""
+class SSEMCPServer:
+    """MCP Server that communicates via SSE over HTTP."""
 
-    def __init__(self) -> None:
-        self.config = Config.from_env()
+    def __init__(self, config: Config | None = None) -> None:
+        self.config = config or Config.from_env()
         self.whois_service = WhoisService(self.config)
         self.rdap_service = RDAPService(self.config)
         self.cache_service = CacheService(self.config)
@@ -53,7 +57,10 @@ class MCPServer:
         # Server info
         self.server_info = {"name": "whoismcp", "version": "1.0.0"}
 
-        # Define available tools
+        # Session management
+        self.sessions: dict[str, dict[str, Any]] = {}
+
+        # Define available tools (same as stdio server)
         self.tools = [
             {
                 "name": "whois_lookup",
@@ -121,46 +128,27 @@ class MCPServer:
                 "uri": "whois://config",
                 "name": "Whois Server Configuration",
                 "description": "Current configuration for Whois servers and settings",
-                "mimeType": "application/json"
+                "mimeType": "application/json",
             },
             {
-                "uri": "rdap://config", 
+                "uri": "rdap://config",
                 "name": "RDAP Server Configuration",
                 "description": "Current configuration for RDAP servers and settings",
-                "mimeType": "application/json"
+                "mimeType": "application/json",
             },
             {
                 "uri": "cache://stats",
                 "name": "Cache Statistics",
                 "description": "Current cache usage and performance statistics",
-                "mimeType": "application/json"
+                "mimeType": "application/json",
             },
             {
                 "uri": "rate-limit://status",
                 "name": "Rate Limit Status",
                 "description": "Current rate limiting status and configuration",
-                "mimeType": "application/json"
-            }
+                "mimeType": "application/json",
+            },
         ]
-
-    def write_message(self, message: dict[str, Any]) -> None:
-        """Write a message to stdout."""
-        json_str = json.dumps(message)
-        print(json_str, flush=True)
-
-    def read_message(self) -> dict[str, Any] | None:
-        """Read a message from stdin."""
-        try:
-            line = sys.stdin.readline()
-            if not line:
-                return None
-            return json.loads(line.strip())
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse JSON", error=str(e))
-            return None
-        except Exception as e:
-            logger.error("Failed to read message", error=str(e))
-            return None
 
     async def handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle MCP initialize request."""
@@ -178,32 +166,6 @@ class MCPServer:
         """Handle resources/list request."""
         return {"resources": self.resources}
 
-    async def handle_call_tool(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle tools/call request."""
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
-
-        try:
-            if tool_name == "whois_lookup":
-                return await self._handle_whois_lookup(arguments)
-            elif tool_name == "rdap_lookup":
-                return await self._handle_rdap_lookup(arguments)
-            elif tool_name == "check_domains_bulk":
-                return await self._handle_bulk_check(arguments)
-            else:
-                return {
-                    "isError": True,
-                    "content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}],
-                }
-        except Exception as e:
-            logger.error("Tool call failed", tool=tool_name, error=str(e))
-            return {
-                "isError": True,
-                "content": [
-                    {"type": "text", "text": f"Tool execution failed: {str(e)}"}
-                ],
-            }
-
     async def _handle_whois_lookup(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Handle whois lookup tool call."""
         target = arguments.get("target")
@@ -218,7 +180,7 @@ class MCPServer:
             }
 
         # Check rate limiting
-        if not await self.rate_limiter.acquire("mcp_client"):
+        if not await self.rate_limiter.acquire("sse_client"):
             return {
                 "isError": True,
                 "content": [
@@ -290,7 +252,7 @@ class MCPServer:
             }
 
         # Check rate limiting
-        if not await self.rate_limiter.acquire("mcp_client"):
+        if not await self.rate_limiter.acquire("sse_client"):
             return {
                 "isError": True,
                 "content": [
@@ -438,7 +400,7 @@ class MCPServer:
             }
 
         # Check rate limiting (use fewer tokens for bulk operation)
-        if not await self.rate_limiter.acquire("mcp_client"):
+        if not await self.rate_limiter.acquire("sse_client"):
             return {
                 "isError": True,
                 "content": [
@@ -479,6 +441,32 @@ class MCPServer:
                 "content": [{"type": "text", "text": f"Bulk check failed: {str(e)}"}],
             }
 
+    async def handle_call_tool(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle tools/call request."""
+        tool_name = params.get("name")
+        arguments = params.get("arguments", {})
+
+        try:
+            if tool_name == "whois_lookup":
+                return await self._handle_whois_lookup(arguments)
+            elif tool_name == "rdap_lookup":
+                return await self._handle_rdap_lookup(arguments)
+            elif tool_name == "check_domains_bulk":
+                return await self._handle_bulk_check(arguments)
+            else:
+                return {
+                    "isError": True,
+                    "content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}],
+                }
+        except Exception as e:
+            logger.error("Tool call failed", tool=tool_name, error=str(e))
+            return {
+                "isError": True,
+                "content": [
+                    {"type": "text", "text": f"Tool execution failed: {str(e)}"}
+                ],
+            }
+
     async def handle_read_resource(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle resources/read request."""
         uri = params.get("uri", "")
@@ -487,9 +475,9 @@ class MCPServer:
             if uri == "whois://config":
                 config_data = {
                     "whois_timeout": self.config.whois_timeout,
-                    "whois_servers": getattr(self.whois_service, 'WHOIS_SERVERS', {}),
+                    "whois_servers": getattr(self.whois_service, "WHOIS_SERVERS", {}),
                     "max_retries": self.config.max_retries,
-                    "retry_delay": self.config.retry_delay
+                    "retry_delay": self.config.retry_delay,
                 }
                 return {
                     "contents": [
@@ -503,9 +491,9 @@ class MCPServer:
             elif uri == "rdap://config":
                 config_data = {
                     "rdap_timeout": self.config.rdap_timeout,
-                    "rdap_servers": getattr(self.rdap_service, 'RDAP_SERVERS', {}),
+                    "rdap_servers": getattr(self.rdap_service, "RDAP_SERVERS", {}),
                     "max_connections": self.config.max_connections,
-                    "max_keepalive_connections": self.config.max_keepalive_connections
+                    "max_keepalive_connections": self.config.max_keepalive_connections,
                 }
                 return {
                     "contents": [
@@ -521,7 +509,7 @@ class MCPServer:
                     "cache_size": len(self.cache_service._cache),
                     "cache_max_size": self.config.cache_max_size,
                     "cache_ttl": self.config.cache_ttl,
-                    "cache_cleanup_interval": self.config.cache_cleanup_interval
+                    "cache_cleanup_interval": self.config.cache_cleanup_interval,
                 }
                 return {
                     "contents": [
@@ -538,7 +526,7 @@ class MCPServer:
                     "global_rate_limit_burst": self.config.global_rate_limit_burst,
                     "client_rate_limit_per_second": self.config.client_rate_limit_per_second,
                     "client_rate_limit_burst": self.config.client_rate_limit_burst,
-                    "active_clients": len(self.rate_limiter.client_buckets)
+                    "active_clients": len(self.rate_limiter.client_buckets),
                 }
                 return {
                     "contents": [
@@ -581,11 +569,8 @@ class MCPServer:
 
         if request_id is None:
             logger.debug(f"Received notification {method}")
-
             if method == "notifications/initialized":
-                # Handle initialize notification
                 logger.info("Client initialized notification received")
-
             return None
 
         try:
@@ -616,41 +601,151 @@ class MCPServer:
                 "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
             }
 
-    async def run(self) -> None:
-        """Main server loop."""
-        logger.info("MCP stdio server starting")
 
-        # Start cache service
-        await self.cache_service.start()
+# Create global server instance
+_server: SSEMCPServer | None = None
 
+
+async def get_server() -> SSEMCPServer:
+    """Get or create the global server instance."""
+    global _server
+    if _server is None:
+        _server = SSEMCPServer()
+        await _server.cache_service.start()
+    return _server
+
+
+async def handle_sse(request: Request) -> StreamingResponse:
+    """Handle SSE endpoint - establishes event stream for MCP communication."""
+    server = await get_server()
+    session_id = str(uuid.uuid4())
+
+    logger.info("New SSE connection", session_id=session_id)
+
+    async def event_generator():
+        """Generate SSE events."""
         try:
+            # Send initial connection event
+            yield f"data: {json.dumps({'type': 'connected', 'session_id': session_id})}\n\n"
+
+            # Keep connection alive with periodic pings
             while True:
-                # Read request from stdin
-                request = self.read_message()
-                if request is None:
-                    break
+                await asyncio.sleep(30)
+                yield f"data: {json.dumps({'type': 'ping'})}\n\n"
 
-                # Process request
-                response = await self.process_request(request)
-
-                if response is not None:
-                    self.write_message(response)
-
-        except KeyboardInterrupt:
-            logger.info("Server shutting down")
-        except Exception as e:
-            logger.error("Server error", error=str(e))
+        except asyncio.CancelledError:
+            logger.info("SSE connection closed", session_id=session_id)
             raise
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+async def handle_message(request: Request) -> JSONResponse:
+    """Handle HTTP POST requests with MCP JSON-RPC messages."""
+    server = await get_server()
+
+    try:
+        # Parse incoming JSON-RPC request
+        body = await request.json()
+        logger.debug("Received message", method=body.get("method"))
+
+        # Process the request
+        response = await server.process_request(body)
+
+        if response is None:
+            # Notification - no response needed
+            return JSONResponse({"status": "ok"})
+
+        return JSONResponse(response)
+
+    except json.JSONDecodeError as e:
+        logger.error("Invalid JSON", error=str(e))
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "Parse error"},
+            },
+            status_code=400,
+        )
+    except Exception as e:
+        logger.error("Request handling failed", error=str(e))
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
+            },
+            status_code=500,
+        )
+
+
+async def health_check(request: Request) -> JSONResponse:
+    """Health check endpoint."""
+    server = await get_server()
+    return JSONResponse(
+        {
+            "status": "healthy",
+            "server": server.server_info,
+            "cache_size": len(server.cache_service._cache),
+        }
+    )
+
+
+def create_app(config: Config | None = None) -> Starlette:
+    """Create and configure the Starlette application."""
+    cfg = config or Config.from_env()
+
+    routes = [
+        Route("/sse", handle_sse),
+        Route("/message", handle_message, methods=["POST"]),
+        Route("/health", health_check),
+    ]
+
+    app = Starlette(debug=False, routes=routes)
+
+    # Add CORS middleware
+    allowed_origins = cfg.cors_allowed_origins.split(",")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    return app
 
 
 def main() -> None:
-    """Main entry point."""
+    """Main entry point for SSE server."""
+    import uvicorn
 
-    async def run_server():
-        server = MCPServer()
-        await server.run()
+    config = Config.from_env()
+    config.validate()
 
-    asyncio.run(run_server())
+    logger.info(
+        "Starting SSE MCP server",
+        host=config.bind_host,
+        port=config.bind_port,
+    )
+
+    app = create_app(config)
+
+    uvicorn.run(
+        app,
+        host=config.bind_host,
+        port=config.bind_port,
+        log_level=config.log_level.lower(),
+    )
 
 
 if __name__ == "__main__":
