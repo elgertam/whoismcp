@@ -80,6 +80,7 @@ class RDAPService:
             rdap_servers = await self._get_domain_rdap_servers(domain)
 
             # Try each server until one succeeds
+            last_error = None
             for server in rdap_servers:
                 try:
                     response = await self._query_rdap_server(server, f"domain/{domain}")
@@ -102,6 +103,7 @@ class RDAPService:
                     return result.model_dump(mode="json")
 
                 except Exception as e:
+                    last_error = e
                     logger.warning(
                         "RDAP server failed, trying next",
                         domain=domain,
@@ -110,8 +112,11 @@ class RDAPService:
                     )
                     continue
 
-            # All servers failed
-            raise RuntimeError("All RDAP servers failed")
+            # All servers failed - preserve the last error type
+            if last_error and "not found" in str(last_error).lower():
+                raise ValueError(f"Domain not found: {domain}") from last_error
+            else:
+                raise RuntimeError("All RDAP servers failed")
 
         except Exception as e:
             logger.error("Domain RDAP lookup failed", domain=domain, error=str(e))
