@@ -317,12 +317,17 @@ class SSEMCPServer:
         Check if a domain is registered using RDAP.
         Returns (domain, status) where status is "registered", "available", or "error".
         """
-        # Check cache first
+        # Check cache first (before rate limiting to avoid wasting tokens)
         cache_key = f"bulk_check:{domain}"
         if use_cache:
             cached_result = await self.cache_service.get(cache_key)
             if cached_result:
                 return (domain, cached_result)
+
+        # Check rate limiting for each domain check (prevents bypass)
+        if not await self.rate_limiter.acquire("sse_client"):
+            logger.warning("Rate limit exceeded for domain check", domain=domain)
+            return (domain, "error")
 
         try:
             # Use RDAP for quick lookup
@@ -402,17 +407,8 @@ class SSEMCPServer:
                 ],
             }
 
-        # Check rate limiting (use fewer tokens for bulk operation)
-        if not await self.rate_limiter.acquire("sse_client"):
-            return {
-                "isError": True,
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Rate limit exceeded. Please try again later.",
-                    }
-                ],
-            }
+        # Note: Rate limiting is checked per-domain in _check_domain_status
+        # to prevent bypassing rate limits with bulk operations
 
         try:
             # Process domains concurrently with limit
