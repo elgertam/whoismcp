@@ -337,8 +337,11 @@ class SSEMCPServer:
                 if response_data.get("objectClassName") == "domain":
                     # Domain exists in RDAP, it's registered
                     status = "registered"
-                elif response_data.get("status"):
-                    # Has status field, likely registered
+                elif "ldhName" in response_data or "handle" in response_data:
+                    # Has domain name or handle field, it's registered
+                    status = "registered"
+                elif "status" in response_data:
+                    # Has status field (even if empty list), likely registered
                     status = "registered"
                 else:
                     # No clear data, consider available

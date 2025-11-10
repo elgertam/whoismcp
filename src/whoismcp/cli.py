@@ -397,7 +397,11 @@ def bulk_check(ctx: click.Context, domains: tuple[str, ...], output: str) -> Non
                     result = await rdap_service.lookup_domain(domain)
                     if result.get("success"):
                         response_data = result.get("response_data", {})
-                        if response_data.get("objectClassName") == "domain" or response_data.get("status"):
+                        # Check for common RDAP indicators of registration
+                        if (response_data.get("objectClassName") == "domain" or
+                            "ldhName" in response_data or
+                            "handle" in response_data or
+                            "status" in response_data):
                             results[domain] = "registered"
                         else:
                             results[domain] = "available"
