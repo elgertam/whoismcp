@@ -5,7 +5,7 @@ A high-performance MCP server providing domain and IP address lookup services
 using both traditional Whois and modern RDAP protocols.
 """
 
-__version__ = "0.3.8"
+__version__ = "0.4.0"
 __author__ = "Whois MCP Server"
 __email__ = "server@example.com"
 
