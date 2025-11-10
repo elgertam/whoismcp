@@ -12,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from whoismcp import __version__
 from whoismcp.config import Config
 from whoismcp.mcp_core import MCPServerCore
 
@@ -92,6 +93,10 @@ class MCPServer:
 
 def main() -> None:
     """Main entry point."""
+    # Check for --version flag
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v"):
+        print(f"whoismcp-server {__version__}")
+        sys.exit(0)
 
     async def run_server():
         server = MCPServer()
