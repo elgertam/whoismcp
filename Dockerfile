@@ -14,8 +14,8 @@ COPY src/ ./src/
 # Install dependencies
 RUN uv pip install --system -e .
 
-# Expose port
+# Expose port (can be overridden by environment)
 EXPOSE 8080
 
-# Run SSE server
-CMD ["python", "-m", "uvicorn", "whoismcp.sse_server:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory"]
+# Run SSE server using main entry point which respects PORT/BIND_PORT env vars
+CMD ["python", "-m", "whoismcp.sse_server"]
