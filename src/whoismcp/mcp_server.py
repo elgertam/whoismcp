@@ -16,6 +16,7 @@ from whoismcp.config import Config
 from whoismcp.services.cache_service import CacheService
 from whoismcp.services.rdap_service import RDAPService
 from whoismcp.services.whois_service import WhoisService
+from whoismcp.services.concurrent_service import ConcurrentLookupService
 from whoismcp.utils.rate_limiter import RateLimiter
 from whoismcp.utils.validators import is_valid_domain, is_valid_ip
 
@@ -49,9 +50,10 @@ class MCPServer:
         self.rdap_service = RDAPService(self.config)
         self.cache_service = CacheService(self.config)
         self.rate_limiter = RateLimiter(self.config)
+        self.concurrent_service = ConcurrentLookupService(self.config)
 
         # Server info
-        self.server_info = {"name": "whoismcp", "version": "1.0.0"}
+        self.server_info = {"name": "whoismcp", "version": "2.0.0"}
 
         # Define available tools
         self.tools = [
@@ -69,6 +71,16 @@ class MCPServer:
                             "type": "boolean",
                             "description": "Whether to use cached results",
                             "default": True,
+                        },
+                        "brief": {
+                            "type": "boolean",
+                            "description": "Return only essential information",
+                            "default": False,
+                        },
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Specific fields to return in brief mode",
                         },
                     },
                     "required": ["target"],
@@ -89,8 +101,56 @@ class MCPServer:
                             "description": "Whether to use cached results",
                             "default": True,
                         },
+                        "brief": {
+                            "type": "boolean",
+                            "description": "Return only essential information",
+                            "default": False,
+                        },
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Specific fields to return in brief mode",
+                        },
                     },
                     "required": ["target"],
+                },
+            },
+            {
+                "name": "bulk_lookup",
+                "description": "Perform bulk lookups for multiple domains/IPs",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "targets": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of domains/IPs to lookup",
+                        },
+                        "lookup_type": {
+                            "type": "string",
+                            "enum": ["whois", "rdap"],
+                            "description": "Type of lookup to perform",
+                            "default": "whois",
+                        },
+                        "brief": {
+                            "type": "boolean",
+                            "description": "Return only essential information",
+                            "default": False,
+                        },
+                        "use_cache": {
+                            "type": "boolean",
+                            "description": "Whether to use cached results",
+                            "default": True,
+                        },
+                        "max_concurrent": {
+                            "type": "integer",
+                            "description": "Maximum concurrent lookups",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50,
+                        },
+                    },
+                    "required": ["targets"],
                 },
             },
         ]
@@ -141,6 +201,70 @@ class MCPServer:
         except Exception as e:
             logger.error("Failed to read message", error=str(e))
             return None
+    
+    def extract_brief_info(self, full_data: dict[str, Any], fields: list[str] | None = None, target_type: str = "domain") -> dict[str, Any]:
+        """Extract brief information from full lookup data."""
+        from datetime import datetime
+        
+        if fields:
+            # Return only requested fields
+            brief = {}
+            for field in fields:
+                if field in full_data:
+                    brief[field] = full_data[field]
+                elif "parsed_data" in full_data and field in full_data["parsed_data"]:
+                    brief[field] = full_data["parsed_data"][field]
+            return brief
+        
+        # Default brief mode fields based on target type
+        if target_type == "domain":
+            default_fields = [
+                "domain_name", "registrar", "creation_date", 
+                "expiration_date", "name_servers", "status"
+            ]
+        else:  # IP
+            default_fields = [
+                "ip_address", "network_range", "organization",
+                "country", "abuse_contact"
+            ]
+        
+        brief = {
+            "target": full_data.get("target"),
+            "target_type": full_data.get("target_type"),
+            "timestamp": full_data.get("timestamp", datetime.utcnow().isoformat())
+        }
+        
+        # Extract from parsed_data if available
+        if "parsed_data" in full_data:
+            for field in default_fields:
+                if field in full_data["parsed_data"]:
+                    brief[field] = full_data["parsed_data"][field]
+        
+        # For RDAP, extract from response_data
+        elif "response_data" in full_data:
+            data = full_data["response_data"]
+            if target_type == "domain":
+                brief["domain_name"] = data.get("ldhName") or data.get("handle")
+                brief["status"] = data.get("status", [])
+                
+                # Extract dates from events
+                for event in data.get("events", []):
+                    if event.get("eventAction") == "registration":
+                        brief["creation_date"] = event.get("eventDate")
+                    elif event.get("eventAction") == "expiration":
+                        brief["expiration_date"] = event.get("eventDate")
+                
+                # Extract nameservers
+                brief["name_servers"] = []
+                for ns in data.get("nameservers", []):
+                    if ns.get("ldhName"):
+                        brief["name_servers"].append(ns["ldhName"])
+            else:  # IP
+                brief["network_range"] = f"{data.get('startAddress', '')}-{data.get('endAddress', '')}"
+                brief["organization"] = data.get("name")
+                brief["country"] = data.get("country")
+        
+        return brief
 
     async def handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle MCP initialize request."""
@@ -168,6 +292,8 @@ class MCPServer:
                 return await self._handle_whois_lookup(arguments)
             elif tool_name == "rdap_lookup":
                 return await self._handle_rdap_lookup(arguments)
+            elif tool_name == "bulk_lookup":
+                return await self._handle_bulk_lookup(arguments)
             else:
                 return {
                     "isError": True,
@@ -186,6 +312,8 @@ class MCPServer:
         """Handle whois lookup tool call."""
         target = arguments.get("target")
         use_cache = arguments.get("use_cache", True)
+        brief = arguments.get("brief", False)
+        fields = arguments.get("fields")
 
         if not target:
             return {
@@ -212,6 +340,10 @@ class MCPServer:
         if use_cache:
             cached_result = await self.cache_service.get(cache_key)
             if cached_result:
+                # Apply brief mode if requested
+                if brief:
+                    target_type = "domain" if is_valid_domain(target) else "ip"
+                    cached_result = self.extract_brief_info(cached_result, fields, target_type)
                 return {
                     "content": [
                         {"type": "text", "text": json.dumps(cached_result, indent=2)}
@@ -238,6 +370,11 @@ class MCPServer:
             # Cache result if successful
             if use_cache and result_dict.get("success"):
                 await self.cache_service.set(cache_key, result_dict)
+            
+            # Apply brief mode if requested
+            if brief:
+                target_type = result_dict.get("target_type", "domain")
+                result_dict = self.extract_brief_info(result_dict, fields, target_type)
 
             return {
                 "content": [
@@ -258,6 +395,8 @@ class MCPServer:
         """Handle RDAP lookup tool call."""
         target = arguments.get("target")
         use_cache = arguments.get("use_cache", True)
+        brief = arguments.get("brief", False)
+        fields = arguments.get("fields")
 
         if not target:
             return {
@@ -284,6 +423,10 @@ class MCPServer:
         if use_cache:
             cached_result = await self.cache_service.get(cache_key)
             if cached_result:
+                # Apply brief mode if requested
+                if brief:
+                    target_type = "domain" if is_valid_domain(target) else "ip"
+                    cached_result = self.extract_brief_info(cached_result, fields, target_type)
                 return {
                     "content": [
                         {"type": "text", "text": json.dumps(cached_result, indent=2)}
@@ -310,6 +453,11 @@ class MCPServer:
             # Cache result if successful
             if use_cache and result_dict.get("success"):
                 await self.cache_service.set(cache_key, result_dict)
+            
+            # Apply brief mode if requested
+            if brief:
+                target_type = result_dict.get("target_type", "domain")
+                result_dict = self.extract_brief_info(result_dict, fields, target_type)
 
             return {
                 "content": [
@@ -324,6 +472,70 @@ class MCPServer:
             return {
                 "isError": True,
                 "content": [{"type": "text", "text": f"RDAP lookup failed: {str(e)}"}],
+            }
+    
+    async def _handle_bulk_lookup(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Handle bulk lookup tool call."""
+        targets = arguments.get("targets", [])
+        lookup_type = arguments.get("lookup_type", "whois")
+        use_cache = arguments.get("use_cache", True)
+        max_concurrent = arguments.get("max_concurrent", 10)
+        brief = arguments.get("brief", False)
+        
+        if not targets:
+            return {
+                "isError": True,
+                "content": [
+                    {"type": "text", "text": "Missing required argument: targets"}
+                ],
+            }
+        
+        try:
+            results = []
+            # Use concurrent service for bulk operations
+            async for result in self.concurrent_service.bulk_lookup(
+                targets=targets,
+                lookup_type=lookup_type,
+                use_cache=use_cache,
+                max_concurrent=max_concurrent
+            ):
+                # Convert to dict for serialization
+                result_dict = {
+                    "target": result.target,
+                    "status": result.status,
+                    "from_cache": result.from_cache,
+                    "timestamp": result.timestamp.isoformat() if result.timestamp else None
+                }
+                
+                if result.status == "success" and result.data:
+                    # Apply brief mode if requested
+                    if brief:
+                        target_type = result.data.get("target_type", "domain")
+                        result_dict["data"] = self.extract_brief_info(result.data, None, target_type)
+                    else:
+                        result_dict["data"] = result.data
+                elif result.error:
+                    result_dict["error"] = result.error
+                
+                results.append(result_dict)
+            
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps({
+                            "total": len(results),
+                            "results": results
+                        }, indent=2, default=str),
+                    }
+                ]
+            }
+            
+        except Exception as e:
+            logger.error("Bulk lookup failed", error=str(e))
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": f"Bulk lookup failed: {str(e)}"}],
             }
 
     async def handle_read_resource(self, params: dict[str, Any]) -> dict[str, Any]:

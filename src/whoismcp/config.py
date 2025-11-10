@@ -66,6 +66,18 @@ class Config:
     retry_delay: float = field(
         default_factory=lambda: float(os.getenv("RETRY_DELAY", "1.0"))
     )
+    
+    # Concurrent lookup configuration
+    max_concurrent_lookups: int = field(
+        default_factory=lambda: int(os.getenv("MAX_CONCURRENT_LOOKUPS", "10"))
+    )
+    delay_between_requests: float = field(
+        default_factory=lambda: float(os.getenv("DELAY_BETWEEN_REQUESTS", "0.1"))
+    )
+    
+    # HTTP server configuration
+    http_host: str = field(default_factory=lambda: os.getenv("HTTP_HOST", "0.0.0.0"))
+    http_port: int = field(default_factory=lambda: int(os.getenv("HTTP_PORT", "8000")))
 
     def to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary."""
@@ -86,6 +98,10 @@ class Config:
             "max_keepalive_connections": self.max_keepalive_connections,
             "max_retries": self.max_retries,
             "retry_delay": self.retry_delay,
+            "max_concurrent_lookups": self.max_concurrent_lookups,
+            "delay_between_requests": self.delay_between_requests,
+            "http_host": self.http_host,
+            "http_port": self.http_port,
         }
 
     @classmethod

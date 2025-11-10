@@ -329,6 +329,138 @@ def config_show(ctx: click.Context) -> None:
         click.echo(f"{key}: {value}")
 
 
+@cli.command("http-server")
+@click.option("--host", default=None, help="HTTP server host (default: from config or 0.0.0.0)")
+@click.option("--port", default=None, type=int, help="HTTP server port (default: from config or 8000)")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development")
+@click.pass_context
+def http_server(ctx: click.Context, host: str, port: int, reload: bool) -> None:
+    """Run the HTTP/SSE MCP server."""
+    config = ctx.obj["config"]
+    
+    # Use provided values or fall back to config
+    host = host or config.http_host
+    port = port or config.http_port
+    
+    click.echo(f"Starting HTTP/SSE MCP server on {host}:{port}")
+    click.echo("Press Ctrl+C to stop")
+    
+    try:
+        import uvicorn
+        uvicorn.run(
+            "whoismcp.http_server:app",
+            host=host,
+            port=port,
+            reload=reload,
+            log_level="info" if not ctx.parent.params.get("verbose") else "debug"
+        )
+    except ImportError:
+        click.echo("Error: uvicorn is not installed. Please install it with: pip install uvicorn", err=True)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        click.echo("\nServer stopped")
+    except Exception as e:
+        click.echo(f"Error starting server: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("bulk-lookup")
+@click.argument("targets", nargs=-1, required=True)
+@click.option("--method", type=click.Choice(["whois", "rdap", "both"]), default="whois", help="Lookup method")
+@click.option("--max-concurrent", default=10, type=int, help="Maximum concurrent lookups")
+@click.option("--brief", is_flag=True, help="Return only essential information")
+@click.option("--output", "-o", type=click.Choice(["json", "text"]), default="text", help="Output format")
+@click.pass_context
+def bulk_lookup(ctx: click.Context, targets: tuple, method: str, max_concurrent: int, brief: bool, output: str) -> None:
+    """Perform bulk lookups for multiple domains/IPs."""
+    from whoismcp.services.concurrent_service import ConcurrentLookupService
+    
+    async def run_bulk() -> None:
+        config = ctx.obj["config"]
+        service = ConcurrentLookupService(config)
+        
+        target_list = list(targets)
+        click.echo(f"Starting bulk lookup for {len(target_list)} targets...")
+        
+        results = []
+        if method == "both":
+            # Use parallel lookup for both services
+            all_results = await service.parallel_lookup(
+                targets=target_list,
+                use_both_services=True,
+                max_concurrent=max_concurrent
+            )
+            
+            if output == "json":
+                click.echo(json.dumps(all_results, indent=2, default=str))
+            else:
+                for target, services in all_results.items():
+                    click.echo(f"\n{target}:")
+                    click.echo("-" * 40)
+                    for service_type, result in services.items():
+                        if result.status == "success":
+                            click.echo(f"  {service_type.upper()}: ✓ Success")
+                            if brief and result.data:
+                                # Show brief info
+                                parsed = result.data.get("parsed_data", {})
+                                if parsed:
+                                    if "domain_name" in parsed:
+                                        click.echo(f"    Registrar: {parsed.get('registrar', 'N/A')}")
+                                        click.echo(f"    Expires: {parsed.get('expiration_date', 'N/A')}")
+                                    elif "organization" in parsed:
+                                        click.echo(f"    Organization: {parsed.get('organization', 'N/A')}")
+                                        click.echo(f"    Country: {parsed.get('country', 'N/A')}")
+                        else:
+                            click.echo(f"  {service_type.upper()}: ✗ {result.error}")
+        else:
+            # Single service lookup
+            async for result in service.bulk_lookup(
+                targets=target_list,
+                lookup_type=method,
+                max_concurrent=max_concurrent
+            ):
+                results.append(result)
+                
+                if output == "text":
+                    # Stream results as they come
+                    if result.status == "success":
+                        click.echo(f"✓ {result.target}")
+                        if brief and result.data:
+                            # Show brief info inline
+                            parsed = result.data.get("parsed_data", {})
+                            if parsed:
+                                if "domain_name" in parsed:
+                                    click.echo(f"  Registrar: {parsed.get('registrar', 'N/A')}")
+                                elif "organization" in parsed:
+                                    click.echo(f"  Organization: {parsed.get('organization', 'N/A')}")
+                    else:
+                        click.echo(f"✗ {result.target}: {result.error}")
+            
+            if output == "json":
+                # Output all results as JSON
+                json_results = [
+                    {
+                        "target": r.target,
+                        "status": r.status,
+                        "data": r.data if r.status == "success" else None,
+                        "error": r.error,
+                        "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+                        "from_cache": r.from_cache
+                    }
+                    for r in results
+                ]
+                click.echo(json.dumps(json_results, indent=2, default=str))
+        
+        # Summary
+        if output == "text":
+            click.echo(f"\nCompleted {len(results)} lookups")
+            stats = service.get_statistics()
+            click.echo(f"Success rate: {stats['success_rate']:.1%}")
+            click.echo(f"Cache hits: {sum(1 for r in results if r.from_cache)}")
+    
+    asyncio.run(run_bulk())
+
+
 def main() -> None:
     """Main CLI entry point."""
     cli()

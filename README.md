@@ -5,13 +5,20 @@ A modern, high-performance Model Context Protocol (MCP) server providing domain 
 ## Features
 
 ✨ **Modern Architecture**: Clean package structure with `uv` for dependency management
-🚀 **High Performance**: Asynchronous operations with connection pooling
+🚀 **High Performance**: Asynchronous operations with connection pooling and structured concurrency
 🛡️ **Rate Limiting**: Built-in protection for external registry servers
 💾 **Smart Caching**: In-memory LRU cache with TTL for optimal performance
 🔍 **Dual Protocols**: Support for both Whois (TCP) and RDAP (HTTPS) lookups
 🌍 **Global Coverage**: Comprehensive support for major TLDs and Regional Internet Registries
 📊 **Structured Logging**: Detailed logging with structured output
 🧪 **Comprehensive Testing**: Full test suite with pytest and asyncio support
+
+### New in v2.0
+
+🌐 **Web-based MCP**: HTTP server with SSE (Server-Sent Events) support for streaming responses
+📝 **Brief Mode**: Get only essential information instead of full WHOIS/RDAP dumps
+🔄 **Bulk Lookups**: Efficiently query multiple domains/IPs with structured concurrency
+⚡ **Streamable HTTP Transport**: Compliant with MCP specification 2024-11-05
 
 ## Quick Start
 
@@ -31,6 +38,8 @@ pip install -e ".[dev]"
 
 ### Running the MCP Server
 
+#### Standard (stdio) MCP Server
+
 The MCP server communicates via stdin/stdout as per the MCP specification:
 
 ```bash
@@ -44,6 +53,21 @@ uv run whoismcp-server
 python -m whoismcp.mcp_server
 ```
 
+#### HTTP/SSE MCP Server (New!)
+
+Run the HTTP server with SSE support for web-based clients:
+
+```bash
+# Start HTTP server on port 8000 (default)
+uv run whoismcp http-server
+
+# Custom host and port
+uv run whoismcp http-server --host 0.0.0.0 --port 3000
+
+# Development mode with auto-reload
+uv run whoismcp http-server --reload
+```
+
 ### Using the CLI
 
 ```bash
@@ -52,6 +76,12 @@ uv run whoismcp whois example.com
 
 # RDAP lookup with JSON output
 uv run whoismcp rdap example.com --output json
+
+# Bulk lookup (New!)
+uv run whoismcp bulk-lookup google.com github.com cloudflare.com --brief
+
+# Bulk lookup with both services
+uv run whoismcp bulk-lookup example.com google.com --method both --output json
 
 # Test server connectivity
 uv run whoismcp test-server --host localhost --port 5001
@@ -87,7 +117,57 @@ Add to your MCP client configuration:
 ### Available Tools
 
 - **`whois_lookup`**: Perform Whois lookup for domain or IP address
+  - Now supports `brief` mode and custom `fields` selection
 - **`rdap_lookup`**: Perform RDAP lookup for domain or IP address
+  - Now supports `brief` mode and custom `fields` selection
+- **`bulk_lookup`** (New!): Perform bulk lookups for multiple domains/IPs
+  - Efficient concurrent processing with configurable concurrency
+  - Support for both Whois and RDAP protocols
+  - Brief mode for all results
+
+## New Features Details
+
+### Brief Response Mode
+
+Get only the essential information without the full WHOIS/RDAP dump:
+
+```json
+{
+  "target": "example.com",
+  "domain_name": "example.com",
+  "registrar": "Example Registrar Inc.",
+  "creation_date": "1995-08-14",
+  "expiration_date": "2025-08-13",
+  "name_servers": ["ns1.example.com", "ns2.example.com"]
+}
+```
+
+You can also specify custom fields to return:
+```json
+{
+  "brief": true,
+  "fields": ["domain_name", "registrar", "expiration_date"]
+}
+```
+
+### Bulk Lookup with Structured Concurrency
+
+Efficiently query multiple domains/IPs using AnyIO's structured concurrency:
+
+- Configurable concurrency limit (1-50 simultaneous lookups)
+- Rate limiting to avoid overwhelming WHOIS/RDAP servers
+- Streaming results as they complete
+- Support for mixed domain and IP lookups
+
+### HTTP/SSE Transport
+
+The new HTTP server supports the MCP Streamable HTTP transport specification:
+
+- Single endpoint (`/mcp`) for all operations
+- Server-Sent Events (SSE) for streaming responses
+- Batch request support
+- Session management
+- Compatible with web-based MCP clients
 
 ## Package Structure
 
@@ -102,7 +182,8 @@ whoismcp/
 ├── src/whoismcp/           # Main package
 │   ├── __init__.py         # Package exports
 │   ├── config.py           # Configuration management
-│   ├── mcp_server.py       # MCP server implementation
+│   ├── mcp_server.py       # MCP server implementation (stdio)
+│   ├── http_server.py      # HTTP/SSE server (New!)
 │   ├── cli.py              # Command-line interface
 │   ├── models/             # Data models
 │   │   ├── __init__.py
@@ -111,7 +192,8 @@ whoismcp/
 │   │   ├── __init__.py
 │   │   ├── whois_service.py
 │   │   ├── rdap_service.py
-│   │   └── cache_service.py
+│   │   ├── cache_service.py
+│   │   └── concurrent_service.py  # Bulk lookup service (New!)
 │   └── utils/              # Utilities
 │       ├── __init__.py
 │       ├── validators.py
@@ -132,6 +214,8 @@ Environment variables for customization:
 # Server settings
 BIND_HOST=0.0.0.0           # Bind host (default: 0.0.0.0)
 BIND_PORT=5001              # Bind port (default: 5001)
+HTTP_HOST=0.0.0.0           # HTTP server host (default: 0.0.0.0)
+HTTP_PORT=8000              # HTTP server port (default: 8000)
 
 # Timeouts
 WHOIS_TIMEOUT=30            # Whois timeout in seconds
@@ -147,6 +231,10 @@ GLOBAL_RATE_LIMIT_PER_SECOND=10.0    # Global rate limit
 GLOBAL_RATE_LIMIT_BURST=50           # Global burst limit
 CLIENT_RATE_LIMIT_PER_SECOND=2.0     # Per-client rate limit
 CLIENT_RATE_LIMIT_BURST=10           # Per-client burst limit
+
+# Concurrent lookup settings
+MAX_CONCURRENT_LOOKUPS=10    # Max concurrent operations
+DELAY_BETWEEN_REQUESTS=0.1   # Delay between requests in seconds
 
 # Logging
 LOG_LEVEL=INFO              # Logging level (DEBUG, INFO, WARNING, ERROR)
