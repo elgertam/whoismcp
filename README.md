@@ -321,6 +321,36 @@ uv build
 - **Structured Data**: Modern JSON-based responses
 - **Standardized Format**: Consistent data structure across registries
 
+## Deployment
+
+### Free Hosting Options
+
+Deploy WhoisMCP to the cloud for remote MCP access:
+
+**🚀 Quick Deploy to Fly.io (Recommended):**
+```bash
+flyctl launch
+flyctl deploy
+```
+
+**Available Platforms:**
+- **Fly.io** - Always-on, 3 free VMs
+- **Render** - Auto-deploy from GitHub
+- **Railway** - $5/month free credit
+- **Google Cloud Run** - 2M requests/month free
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment guides including:
+- Platform-specific setup instructions
+- Configuration examples
+- Testing deployed endpoints
+- Cost estimates
+- Monitoring and logs
+
+**Your deployed endpoints:**
+- Health: `https://your-app.fly.dev/health`
+- MCP: `https://your-app.fly.dev/message`
+- SSE: `https://your-app.fly.dev/sse`
+
 ## Contributing
 
 1. Fork the repository

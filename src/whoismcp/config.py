@@ -13,7 +13,9 @@ class Config:
 
     # Server configuration
     bind_host: str = field(default_factory=lambda: os.getenv("BIND_HOST", "0.0.0.0"))
-    bind_port: int = field(default_factory=lambda: int(os.getenv("BIND_PORT", "5001")))
+    bind_port: int = field(
+        default_factory=lambda: int(os.getenv("PORT", os.getenv("BIND_PORT", "5001")))
+    )
 
     # Transport mode: "stdio" or "sse"
     transport_mode: str = field(default_factory=lambda: os.getenv("TRANSPORT_MODE", "stdio"))

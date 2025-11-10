@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: whoismcp
+    runtime: python
+    plan: free
+    buildCommand: pip install uv && uv pip install --system -e .
+    startCommand: python -m whoismcp.sse_server
+    envVars:
+      - key: TRANSPORT_MODE
+        value: sse
+      - key: BIND_HOST
+        value: 0.0.0.0
+      - key: BIND_PORT
+        value: 10000
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /health
