@@ -51,17 +51,34 @@ class SSEMCPServer:
         self.sessions: dict[str, dict[str, Any]] = {}
 
 
-# Create global server instance
+# Global server instance and initialization lock
 _server: SSEMCPServer | None = None
+_server_lock = asyncio.Lock()
 
 
 async def get_server() -> SSEMCPServer:
-    """Get or create the global server instance."""
+    """
+    Get or create the global server instance (thread-safe singleton).
+
+    Uses double-check locking pattern to prevent race conditions where
+    multiple concurrent requests could create separate server instances,
+    breaking rate limiting and cache sharing.
+    """
     global _server
-    if _server is None:
-        _server = SSEMCPServer()
-        await _server.core.cache_service.start()
-    return _server
+
+    # Fast path: if already initialized, return immediately
+    if _server is not None:
+        return _server
+
+    # Slow path: acquire lock for initialization
+    async with _server_lock:
+        # Double-check: another coroutine may have initialized while we waited
+        if _server is None:
+            _server = SSEMCPServer()
+            await _server.core.cache_service.start()
+            logger.info("SSE server instance initialized")
+
+        return _server
 
 
 async def handle_sse(request: Request) -> StreamingResponse:
